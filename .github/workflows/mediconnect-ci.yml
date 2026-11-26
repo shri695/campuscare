@@ -1,0 +1,61 @@
+name: MediConnect AI - verify and publish source
+on:
+  push:
+    branches: [mediconnect-ai]
+  pull_request:
+    branches: [mediconnect-ai]
+
+permissions:
+  contents: write
+
+jobs:
+  verify-and-publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Rebuild source ZIP
+        run: |
+          cat source-bundle.*.b64 > /tmp/mediconnect-source.b64
+          base64 --decode /tmp/mediconnect-source.b64 > /tmp/mediconnect-source.zip
+          unzip -q /tmp/mediconnect-source.zip -d /tmp/mediconnect-source
+      - name: Fix authenticated rebooking test
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('/tmp/mediconnect-source/mediconnect-ai/backend/tests/test_api.py')
+          source = p.read_text()
+          source = source.replace(
+              'again = c.post("/api/appointments", json=payload)',
+              'again = c.post("/api/appointments", json=payload, headers=headers(patient_token))'
+          )
+          p.write_text(source)
+          PY
+      - name: Install backend dependencies
+        working-directory: /tmp/mediconnect-source/mediconnect-ai/backend
+        run: python -m pip install -r requirements.txt
+      - name: Run backend tests
+        working-directory: /tmp/mediconnect-source/mediconnect-ai/backend
+        run: pytest -q
+      - name: Install frontend dependencies
+        working-directory: /tmp/mediconnect-source/mediconnect-ai/frontend
+        run: npm install
+      - name: Build frontend
+        working-directory: /tmp/mediconnect-source/mediconnect-ai/frontend
+        run: npm run build
+      - name: Publish verified source directory
+        if: github.event_name == 'push'
+        run: |
+          mkdir -p mediconnect-ai
+          cp -a /tmp/mediconnect-source/mediconnect-ai/. mediconnect-ai/
+          rm source-bundle.*.b64
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Publish verified MediConnect AI source [skip ci]"
+          git push origin HEAD:mediconnect-ai
